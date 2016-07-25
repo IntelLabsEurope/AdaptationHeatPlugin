@@ -30,6 +30,8 @@ except:
 import pika
 
 
+VERSION = "1.1"
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -160,7 +162,7 @@ class AEMessenger:
             routing_key=_routing_key_out,
             body=payload
         )
-        LOGGER.debug('adaptation send published')
+        LOGGER.debug('adaptation send published to {}'.format(_routing_key_out))
 
         # listen
         received_body = None
@@ -183,11 +185,12 @@ class AEMessenger:
             LOGGER.debug('adaptation send closed')
 
         def bad_disconnect():
+            LOGGER.debug('adaptation bad disconnect')
             disconnect()
             return None
 
-        LOGGER.debug('adaptation send listening')
-        connection.add_timeout(10, timeout)
+        LOGGER.debug('adaptation send listening on {}'.format(_routing_key_in))
+        connection.add_timeout(30, timeout)
         channel.basic_consume(callback, queue=_queue, no_ack=True)
         channel.start_consuming()
 
@@ -203,19 +206,21 @@ class AEMessenger:
 
     @staticmethod
     def send_create(
-        name,
-        actions,
-        stack_id,
-        default_weighting,
-        weightings,
-        grouping,
-        horizontal_scale_out,
+            name,
+            actions,
+            stack_id,
+            agreement_id,
+            default_weighting,
+            weightings,
+            grouping,
+            horizontal_scale_out,
     ):
         LOGGER.debug('adaptation send_create')
         resource_id = uuid.uuid4().hex
         msg_data = {
             'name': name,
             'stack_id': stack_id,
+            'agreement_id': agreement_id,
             'actions': actions,
             'resource_id': resource_id,
             'default_weighting': default_weighting,
@@ -310,6 +315,12 @@ class AdaptationResponse(resource.Resource):
             required=True,
             default=None,
         ),
+        'agreement_id': properties.Schema(
+            properties.Schema.STRING,
+            _('ID of SLA agreement'),
+            required=False,
+            default=None,
+        ),
         'allowed_actions': properties.Schema(
             properties.Schema.LIST,
             _('allowed_actions'),
@@ -324,6 +335,7 @@ class AdaptationResponse(resource.Resource):
                     'DeveloperAction',
                     'StartAction',
                     'StopAction',
+                    'LowPowerAction'
                 ]
             )],
         ),
@@ -333,6 +345,16 @@ class AdaptationResponse(resource.Resource):
             required=False,
             default=None,
             schema=plugin_schema,
+        ),
+        'extend_embargo': properties.Schema(
+            properties.Schema.NUMBER,
+            (
+                'number of seconds to extend the adaptation '
+                'embargo by on top of how long the adaptation '
+                'actually takes'
+            ),
+            required=False,
+            default=0,
         ),
         'horizontal_scale_out': properties.Schema(
             properties.Schema.MAP,
@@ -406,6 +428,11 @@ class AdaptationResponse(resource.Resource):
                     self.properties.get('horizontal_scale_out', 'Not found')
                 )
             )
+            LOGGER.debug(
+                'agreement id {}'.format(
+                    self.properties.get('agreement_id', 'Not found')
+                )
+            )
 
             plugin_config = self.properties.get('plugins', {})
             if plugin_config:
@@ -424,6 +451,7 @@ class AdaptationResponse(resource.Resource):
                 name=self.properties['name'],
                 actions=self.properties['allowed_actions'],
                 stack_id=self.stack.id,
+                agreement_id=self.properties.get('agreement_id'),
                 default_weighting=plugin_default_weighting,
                 weightings=plugin_weightings,
                 grouping=plugin_grouping,
