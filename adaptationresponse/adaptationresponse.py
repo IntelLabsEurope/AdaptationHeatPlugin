@@ -30,7 +30,7 @@ except:
 import pika
 
 
-VERSION = "1.1"
+VERSION = "1.3"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,37 +43,28 @@ rabbit_hosts = None
 try:
     rpc_backend = r_conf.rpc_backend
     if hasattr(r_conf, 'oslo_messaging_rabbit'):
-        rabbbit_userid = (
-            r_conf.oslo_messaging_rabbit.rabbit_userid if hasattr(
-                r_conf.oslo_messaging_rabbit, 'rabbit_userid'
-            ) else "guest"
-        )
+        rabbbit_userid = r_conf.oslo_messaging_rabbit.rabbit_userid if hasattr(
+            r_conf.oslo_messaging_rabbit, 'rabbit_userid'
+        ) else "guest"
         rabbit_password = (
             r_conf.oslo_messaging_rabbit.rabbit_password if hasattr(
                 r_conf.oslo_messaging_rabbit, 'rabbit_password'
             ) else "guest"
         )
-        rabbit_hosts = (
-            r_conf.oslo_messaging_rabbit.rabbit_hosts if hasattr(
-                r_conf.oslo_messaging_rabbit, 'rabbit_hosts'
-            ) else [r_conf.oslo_messaging_rabbit.rabbit_host]
-        )
+        rabbit_hosts = r_conf.oslo_messaging_rabbit.rabbit_hosts if hasattr(
+            r_conf.oslo_messaging_rabbit, 'rabbit_hosts'
+        ) else [r_conf.oslo_messaging_rabbit.rabbit_host]
     else:
-        rabbbit_userid = (
-            r_conf.rabbit_userid if hasattr(
-                r_conf, 'rabbit_userid'
-            ) else "guest"
-        )
-        rabbit_password = (
-            r_conf.rabbit_password if hasattr(
-                r_conf, 'rabbit_password'
-            ) else "guest"
-        )
-        rabbit_hosts = (
-            r_conf.rabbit_hosts if hasattr(
-                r_conf, 'rabbit_hosts'
-            ) else [r_conf.rabbit_host]
-        )
+        rabbbit_userid = r_conf.rabbit_userid if hasattr(
+            r_conf, 'rabbit_userid'
+        ) else "guest"
+        rabbit_password = r_conf.rabbit_password if hasattr(
+            r_conf, 'rabbit_password'
+        ) else "guest"
+        rabbit_hosts = r_conf.rabbit_hosts if hasattr(
+            r_conf, 'rabbit_hosts'
+        ) else [r_conf.rabbit_host]
+
 except Exception, err:
     LOGGER.info('Exception: {0}'.format(err))
 
@@ -213,7 +204,9 @@ class AEMessenger:
             default_weighting,
             weightings,
             grouping,
+            blacklist,
             horizontal_scale_out,
+            embargo
     ):
         LOGGER.debug('adaptation send_create')
         resource_id = uuid.uuid4().hex
@@ -226,6 +219,8 @@ class AEMessenger:
             'default_weighting': default_weighting,
             'weightings': weightings,
             'grouping': grouping,
+            'blacklist': blacklist,
+            'embargo': embargo,
             'horizontal_scale_out': horizontal_scale_out,
         }
         LOGGER.debug('adaptation msg_data {0}'.format(msg_data))
@@ -306,6 +301,12 @@ class AdaptationResponse(resource.Resource):
                 ),
             ),
         ),
+        'blacklist': properties.Schema(
+            properties.Schema.LIST,
+            _('Blacklist plugins from default plugin grouping'),
+            required=False,
+            default=None
+        ),
     }
 
     properties_schema = {
@@ -354,7 +355,7 @@ class AdaptationResponse(resource.Resource):
                 'actually takes'
             ),
             required=False,
-            default=0,
+            default=None,
         ),
         'horizontal_scale_out': properties.Schema(
             properties.Schema.MAP,
@@ -403,8 +404,8 @@ class AdaptationResponse(resource.Resource):
                         'actually takes'
                     ),
                     required=False,
-                    default=0,
-                )
+                    default=None,
+                ),
             },
         ),
     }
@@ -435,6 +436,12 @@ class AdaptationResponse(resource.Resource):
             )
 
             plugin_config = self.properties.get('plugins', {})
+            scale_out = self.properties.get('horizontal_scale_out', {})
+            if scale_out:
+                embargo = scale_out.get('extend_embargo')
+            else:
+                embargo = self.properties.get('extend_embargo', 0)
+
             if plugin_config:
                 plugin_default_weighting = plugin_config.get(
                     'default_weighting',
@@ -442,10 +449,12 @@ class AdaptationResponse(resource.Resource):
                 )
                 plugin_weightings = plugin_config.get('weightings', [])
                 plugin_grouping = plugin_config.get('grouping', [])
+                plugin_blacklist = plugin_config.get('blacklist', [])
             else:
                 plugin_default_weighting = 1
                 plugin_weightings = []
                 plugin_grouping = []
+                plugin_blacklist = []
 
             response = AEMessenger.send_create(
                 name=self.properties['name'],
@@ -455,10 +464,12 @@ class AdaptationResponse(resource.Resource):
                 default_weighting=plugin_default_weighting,
                 weightings=plugin_weightings,
                 grouping=plugin_grouping,
+                blacklist=plugin_blacklist,
                 horizontal_scale_out=self.properties.get(
                     'horizontal_scale_out',
                     None,
-                )
+                ),
+                embargo=embargo
             )
             LOGGER.debug('adaptation response [{0}]'.format(response))
             LOGGER.debug('adaptation type [{0}]'.format(type(response)))
@@ -499,7 +510,10 @@ class AdaptationResponse(resource.Resource):
             )
             return response['response']
         except Exception, err:
-            raise Exception("handle_delete failed [{}]".format(err))
+            LOGGER.debug(
+                'handle_delete failed, returning true anyway [%s]', str(err)
+            )
+            return True
 
 
 def resource_mapping():
